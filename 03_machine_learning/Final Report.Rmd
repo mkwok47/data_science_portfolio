@@ -1,0 +1,326 @@
+---
+title: "PSTAT 131 Project Final Report"
+author: "Michael Kwok"
+date: "5/31/2020"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(fig.width=10, fig.height=4) 
+library(healthcareai) # contains the make_na function
+library(naniar) # contains the miss_var_summary function
+library(tree) # machine learning tree package
+library(randomForest) # machine learning random forest package
+```
+
+# I. Introduction
+ 
+This report will first explore the data in the Titanic dataset provided by the Department of Biostatistics of Vanderbilt University. The response variable is whether or not a passenger survived (1 for yes, 0 for no), and the covariates provide information about the Titanic passengers such as sex, age, and passenger class. The goal is to answer the research question: which covariates, if any, are most relevant in predicting whether or not a passenger would survive, and why?
+ 
+# II. Data
+
+```{r dataset_overview,echo=FALSE}
+
+titanic <- read.csv("titanic_full.csv", header=T)
+titanic <- make_na(titanic, c(""))
+
+# survival
+percent = length(titanic$Survived[titanic$Survived == 1])/length(titanic$Survived)*100
+percent = round(percent, 3)
+
+```
+
+## a) Contents
+There are `r nrow(titanic)` rows and `r ncol(titanic)` columns in the dataset. `r percent`% of the passengers survived. Besides survival, we are given the following information about the passengers: passenger class, name, sex, age, number of siblings/spouse on board, number of parents/children on board, ticket number, fare amount, cabin number, and port of embarkation.
+
+The numerical predictors are age, number of siblings/spouse, number of parents/children, and fare. The remaining predictors are categorical.
+
+The following table gives the first 10 rows of the dataset.
+
+
+```{r dataset_overview1,echo=FALSE}
+
+head(titanic, n=10)
+
+```
+ 
+## b) Graphs
+Below are visual representations of the predictors. Shaded in dark gray is the death rate.
+
+```{r, fig.cap='\\label{F1}Frequency of Sex', echo=FALSE}
+# sex
+barplot(table(titanic$Survived,titanic$Sex), xlab="Sex", ylab="Count")
+```
+
+```{r, fig.cap='\\label{F2}Frequency of Passenger Class', echo=FALSE}
+# pclass
+barplot(table(titanic$Survived, titanic$Pclass), xlab="Passenger class", ylab="Count")
+```
+
+```{r, fig.cap='\\label{F3}Distribution of Age', echo=FALSE}
+# age
+boxplot(titanic$Age, ylab="Age")
+```
+
+```{r, fig.cap='\\label{F4}Frequency of Siblings/Spouse', echo=FALSE}
+# sibsp
+barplot(table(titanic$Survived, titanic$SibSp), xlab="Number of siblings/spouse", ylab="Count")
+```
+
+```{r, fig.cap='\\label{F5}Frequency of Parents/Children', echo=FALSE}
+# parch
+barplot(table(titanic$Survived, titanic$Parch), xlab="Number of parents/children", ylab="Count")
+```
+
+```{r, fig.cap='\\label{F6}Distribution of Fare', echo=FALSE}
+# fare
+boxplot(titanic$Fare, ylab="Fare")
+```
+
+
+```{r, fig.cap='\\label{F7}Frequency of Port of Embarkation', echo=FALSE}
+# embarked
+barplot(table(titanic$Survived, titanic$Embarked), xlab="Port of embarkation", ylab="Count")
+```
+ 
+\newpage
+ 
+## c) Graph interpretations
+ 
+Figure \ref{F1} shows that the there were nearly twice as many males as there were females, and most of the females survived while most of the males perished. Figure \ref{F2} shows that the majority of the passengers belonged in class 3, followed next by class 1 and then class 2; most of class 3 perished, about half of class 2 perished, and less than half of class 1 perished. Figure \ref{F3} shows that most of the passengers were between ages of 20 and 40, with the average being around 30. Figure \ref{F4} shows that the majority of passengers had either 0 or 1 siblings/spouses on board with them while Figure \ref{F5} shows that the majority of passengers had either 0, 1, or 2 parents/children on board with them. It appears that anyone with 3 or more siblings/spouse or parents/children were extremely likely to die. Figure \ref{F6} shows that the majority of fares were less than 100, but there were some outliers above 100. Figure \ref{F7} shows that the majority of passengers embarked from Southampton, followed next by Cherbourg and then Queenstown. Most of the passengers from Southampton and Queenstown perished while a little less than half of those from Cherbourg perished.
+
+## d) Missing data
+
+```{r data_missingness,echo=FALSE}
+
+# miss_var_summary(titanic)
+
+cabin = round(miss_var_summary(titanic)[1,3],3)
+age = round(miss_var_summary(titanic)[2,3],3)
+emb = round(miss_var_summary(titanic)[3,3],3)
+
+```
+
+`r cabin`% of the Cabin variable, `r age`% of the Age variable, and `r emb`% of the Embarked variable are missing.
+
+# III. Methods
+
+```{r data_transform,echo=FALSE}
+
+set.seed(2020)
+
+titanic <- subset(titanic, select = -c(Name, Ticket, Cabin))
+titanic <- na.roughfix(titanic)
+titanic$Survived <- as.factor(ifelse(titanic$Survived == 1, 'Yes', 'No'))
+
+```
+
+## a) Variable removal and transformation
+The following predictors will be removed: Cabin due to its lack of data, Name because that is not a feasible categorical predictor, and Ticket because it is not consistently numeric or categorical, so it would be difficult to use. After this removal, there will be 7 predictors left.
+
+Next, any missing values will be replaced by the median (for numerical values) or mode (categorical values) for that predictor. Namely, the median of age 28 and the mode port of embarkation Southampton will replace the remaining NA values.
+
+Lastly, the Survived response variable will be converted into Yes/No.
+
+```{r split_data,echo=FALSE}
+
+set.seed(2020)
+indices = sample(1:nrow(titanic), nrow(titanic))
+
+train = indices[1:round(nrow(titanic)*.45)]
+valid = indices[(round(nrow(titanic)*.45)+1):round(nrow(titanic)*.65)]
+test = indices[round((nrow(titanic)*.65)+1):nrow(titanic)]
+
+train = titanic[train,]
+valid = titanic[valid,]
+test = titanic[test,]
+
+```
+
+## b) Splitting the data
+The dataset will then be split into 45% training set, 20% validation set, and 35% hold-out test set. This is equivalent to `r nrow(train)`, `r nrow(valid)`, and `r nrow(test)` observations, respectively.
+
+## c) Classifiers
+The goal is to classify the response variable Survived (Yes or No) based on the predictors. Three models will be fitted to the training data: a classification tree, a pruned tree, and a random forest. See Appendix for the code that builds the models.
+
+## d) Model selection
+The final model will be based on the validation error rates.
+ 
+## e) Details on fitting the models
+
+```{r tree_model,echo=FALSE}
+
+set.seed(2020)
+
+# tree model
+tree.fit <- tree(Survived~., data=train)
+
+```
+
+The classification tree is built on all the predictors using the tree() function from the tree library.
+
+```{r pruned_tree_model,echo=FALSE}
+
+set.seed(2020)
+
+cv <- cv.tree(tree.fit, FUN=prune.misclass, K=10)
+best.cv <- cv$size[which.min(cv$dev)]
+
+# build model
+pt.fit <- prune.misclass(tree.fit, best=best.cv)
+
+```
+
+The pruned tree's optimal tree size is found using the cv.tree() function, which finds that the optimal number of terminal nodes is `r best.cv`. The pruned tree is then built using all the predictors with the prune.misclass() function.
+
+```{r random_forest_model,echo=FALSE}
+
+set.seed(2020)
+
+# random forest model
+rf.fit = randomForest(Survived~., data=train, importance=TRUE)
+
+```
+
+The random forest model is built using all predictors with the randomForest() function from the randomForest library.
+
+# IV. Model Building
+ 
+## a) Classification Tree
+ 
+```{r tree_analysis,echo=FALSE}
+
+set.seed(2020)
+
+plot(tree.fit)
+text(tree.fit, pretty=0, cex=.7)
+title("Classification Tree of Survival")
+
+# get training set labels
+pred.tree <- predict(tree.fit, train, type="class")
+# obtain confusion matrix
+error.tree <- table(pred.tree, train$Survived)
+# training error: 16.5%
+err = round(1 - sum(diag(error.tree))/sum(error.tree), 3)
+
+# get validation set labels
+pred.tree1 <- predict(tree.fit, valid, type="class")
+# obtain confusion matrix
+error.tree1 <- table(pred.tree1, valid$Survived)
+# validation error: 21.8%
+err1 = round(1 - sum(diag(error.tree1))/sum(error.tree1), 3)
+
+```
+
+The classification tree splits on 5 of the predictors: Sex, Pclass, Age, Fare, and Embarked.
+
+The tree's first split is on Sex. If the passenger was female and either in Pclass 1 or 2, then they are predicted to survive. If they were in Pclass 3, they'd only be predicted to survive if their fare was less than 24.81. If a male's age was less than 9, then they are predicted to survive only if they were in Pclass 1 or 2. If their age was 9 or greater, then they are predicted to survive only if they embarked from Cherbourg and their fare was between 9.57 and 14.15.
+
+The training error of the model is `r err` while the validation error is `r err1`.
+
+## b) Pruned Tree
+
+```{r pruned_tree_analysis,echo=FALSE}
+
+set.seed(2020)
+
+plot(pt.fit)
+text(pt.fit, pretty=0, cex=.7)
+title("Pruned Tree of Survival")
+
+min.dev = cv$dev[which.min(cv$dev)]
+best = cv$size[which.min(cv$dev)]
+
+# get training set labels
+pred.pt <- predict(pt.fit, train, type="class")
+# obtain confusion matrix
+err.pt <- table(pred.pt, train$Survived)
+# training error: 16.5%
+err = round(1 - sum(diag(err.pt))/sum(err.pt), 3)
+
+# get validation labels
+pred.pt1 <- predict(pt.fit, valid, type="class")
+# obtain confusion matrix
+err.pt1 <- table(pred.pt1, valid$Survived)
+# validation error: 21.8%
+err1 = round(1 - sum(diag(err.pt1))/sum(err.pt1), 3)
+
+```
+ 
+The pruned tree turns out to be exactly the same as the original tree.
+
+It has `r best` terminal nodes and `r min.dev` cross-validation errors. Just like the original tree, the training error of the model is `r err` while the validation error is `r err1`.
+ 
+## c) Random Forest
+ 
+```{r random_forest_analysis,echo=FALSE}
+
+set.seed(2020)
+
+varImpPlot(rf.fit, sort=T, main="Variable Importance")
+
+# oob estimate of error rate
+oob.err = round(1 - sum(diag(rf.fit$confusion))/sum(rf.fit$confusion), 3)
+
+# get training set labels
+pred.rf = predict(rf.fit, newdata=train)
+# obtain confusion matrix
+error.rf = table(predict=pred.rf, truth=train$Survived)
+# training error: 11.7%
+err = round(1 - sum(diag(error.rf))/sum(error.rf), 3)
+
+# get validation  labels
+pred.rf1 = predict(rf.fit, newdata=valid)
+# obtain confusion matrix
+error.rf1 = table(predict=pred.rf1, truth=valid$Survived)
+# validation error: 19.1%
+err1 = round(1 - sum(diag(error.rf1))/sum(error.rf1), 3)
+
+```
+
+The random forest finds that Sex, Age, and Fare are all among the top 4 most important variables for both the mean decrease in accuracy and gini index metrics. For the mean decrease in accuracy, the fourth variable of the top 4 variables is Pclass; for the gini metric, it's SibSp.
+
+The out-of-bag estimate of the error rate is `r oob.err`. The training error of the model is `r err` while the validation error is `r err1`. Both the training error and validation error are better than those of the previous two models.
+
+## d) Selecting the final model
+
+Out of all three models, the random forest has the best training and validation error rates, so it is selected to be the final model.
+
+\newpage
+
+# V. Conclusions
+
+```{r pruned_tree_conclusion,echo=FALSE}
+
+set.seed(2020)
+
+# get test labels
+pred.pt <- predict(rf.fit, test, type="class")
+# obtain confusion matrix
+err.pt <- table(pred.pt, test$Survived)
+# test error: 19.4%
+err = round(1 - sum(diag(err.pt))/sum(err.pt), 3)
+
+```
+
+The final random forest model has a performance of `r err` on the hold-out test set.
+
+From our findings, we can conclude that women and children were generally the priority passengers to get onto lifeboats. Furthermore, having more siblings/spouses on board would make it more likely that a passenger would perish since they'd spend precious time gathering their family members together. Lastly, it's possible that the the distance from cabins to lifeboats was related to fare and passenger class, making certain passengers more likely to survive.
+
+Potential research directions include further exploring the relationships among predictor variables, such as how fare interacts with passenger class and how sex interacts with age.
+
+# Appendix
+
+```{r,ref.label='tree_model',include=TRUE}
+```
+
+```{r,ref.label='pruned_tree_model',include=TRUE}
+```
+
+```{r random_forest_model,include=TRUE}
+```
+
+# References
+The dataset was obtained from http://biostat.mc.vanderbilt.edu/wiki/Main/DataSets
+
